@@ -150,6 +150,61 @@ powershell -ExecutionPolicy Bypass -File .\status_bot.ps1
 - `/chatid` ให้บอทตอบ chat id ของห้องปัจจุบัน และ private chat จะถูกบันทึกลง `.env` อัตโนมัติ
 - `/refresh` ล้าง cache token แล้วลองดึงใหม่
 
+### Worker bot ปัจจุบัน
+
+- production worker: `https://bco-telegram-bot.ideaplanstudio.workers.dev`
+- webhook Telegram ถูกชี้เข้าที่ `/telegram/webhook`
+- local polling bot ถูกปิดแล้ว เพื่อไม่ให้ล้าง webhook ของ worker
+
+### เมนู `/tasks` แบบเดียวกับ local
+
+- `/tasks <ชื่อ|id|username>` ส่งรายการงานเป็น inline menu ให้กดเลือก
+- รองรับ pagination `ก่อนหน้า/ถัดไป`
+- กดแต่ละเรื่องเพื่อเปิดหน้าเมนูของฟอร์มนั้น
+- จากหน้าเมนูของฟอร์ม สามารถกด:
+  - `ดูแผนที่`
+  - `ดูรูปอาคาร`
+  - ไฟล์แต่ละ `key`
+  - `กลับไปรายการเรื่อง`
+
+## รายละเอียดใบคำขอ
+
+จากการไล่หน้า `https://bco.bangkok.go.th/officer/manage-request/<form_id>/details` กับฟอร์มตัวอย่าง `348145` ตอนนี้ map ได้ดังนี้
+
+### เมนูที่อ่านได้จาก API
+
+- `รายละเอียดใบคำขอ`
+  - ใช้ `GET /form/<form_id>`
+  - ข้อมูลหลักอยู่ใน `form_detail`
+- `เอกสารแนบ`
+  - ใช้ `GET /form/<form_id>/attachment`
+  - แยกได้เป็น:
+    - `applicant_doc`
+    - `official_doc`
+    - `official_doc.doc`
+    - `official_doc.engineer_doc`
+    - `official_doc.inspectors_doc`
+- `ประวัติการดำเนินการ`
+  - ใช้ `GET /form/<form_id>/history`
+  - payload เป็น timeline และมี `children` เป็นลำดับขั้นย่อย
+- `การดำเนินการ`
+  - ตอนนี้ยังไม่มี read endpoint แยกที่ชัดเจน
+  - ใช้ข้อมูลสรุปจาก `form_detail` และ `official_doc.manage_file_status` แทนได้บางส่วน
+
+### สถานะเสนออนุญาต/ไม่อนุญาต
+
+- ยังไม่เจอ endpoint แยกแบบ:
+  - `/allow`
+  - `/disallow`
+  - `/propose_allow`
+  - `/propose_disallow`
+- แต่สถานะพวกนี้เจอใน `GET /form/<form_id>/history`
+- ตัวอย่างที่พบในฟอร์ม `348145`:
+  - `วิศวกรพิจารณาเสนออนุญาต`
+  - `อยู่ระหว่างหัวหน้ากลุ่มงานพิจารณาเสนออนุญาต`
+  - `หัวหน้ากลุ่มงาน ไม่อนุมัติเสนออนุญาต`
+- เหตุผลไม่อนุมัติถูกอ่านได้จาก `history.reason` และ `form_detail.reason_send_back`
+
 ## หมายเหตุ
 
 - ถ้าใช้ Chrome token อย่างเดียว เมื่อ cookie หมดอายุและ refresh token ตายแล้ว ระบบจะดึงข้อมูลไม่ได้จนกว่าจะ login ใหม่
@@ -166,5 +221,5 @@ powershell -ExecutionPolicy Bypass -File .\status_bot.ps1
   - `.github/workflows/scheduled-report.yml` ส่งรายงานทุกวันเวลา 08:00 ไทย
   - `.github/workflows/auth-monitor.yml` เช็ค auth ทุก 30 นาที และแจ้ง Telegram เมื่อเข้า BCO ไม่ได้
 - worker bot อยู่ใน `telegram-worker/`
-- worker รองรับ `/status`, `/top`, `/officer`, `/tasks`, `/refresh`, `/chatid`
+- worker รองรับ `/status`, `/top`, `/officer`, `/tasks`, `/form`, `/map`, `/building`, `/files`, `/file`, `/r1`, `/otp`, `/refresh`, `/chatid`
 - มี workflow `deploy-worker.yml` สำหรับ deploy อัตโนมัติเมื่อ push ถ้าตั้ง `CLOUDFLARE_API_TOKEN` และ `CLOUDFLARE_ACCOUNT_ID` ใน GitHub Secrets แล้ว

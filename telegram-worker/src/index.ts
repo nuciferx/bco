@@ -584,6 +584,13 @@ function formatFormFilesPickerMessage(formId: number, detail: Dict, files: FormF
 function buildFormFilesKeyboard(formId: number, files: FormFileRow[], officerId: number | null = null, page = 0): Record<string, unknown> {
   const realFiles = files.filter((row) => row.has_file);
   const inline_keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  inline_keyboard.push([
+    { text: "ประวัติการดำเนินการ", callback_data: `section:${formId}:history:${officerId ?? 0}:${page}` },
+    { text: "เอกสารแนบ", callback_data: `section:${formId}:attachments:${officerId ?? 0}:${page}` },
+  ]);
+  inline_keyboard.push([
+    { text: "การดำเนินการ", callback_data: `section:${formId}:action:${officerId ?? 0}:${page}` },
+  ]);
   const actionRow: Array<{ text: string; callback_data: string }> = [];
   if (findSpecialFile(files, MAP_DOC_HINTS, ["a5.6"])) actionRow.push({ text: "ดูแผนที่", callback_data: `preview:${formId}:map` });
   if (findSpecialFile(files, BUILDING_DOC_HINTS, ["a5.5"])) actionRow.push({ text: "ดูรูปอาคาร", callback_data: `preview:${formId}:building` });
@@ -623,6 +630,21 @@ async function editFormFilesMenu(
   page: number,
 ): Promise<void> {
   await editMessageText(env, chatId, messageId, formatFormFilesPickerMessage(formId, detail, files), {
+    reply_markup: buildFormFilesKeyboard(formId, files, officerId, page),
+  });
+}
+
+async function editFormMenu(
+  env: Env,
+  chatId: number | string,
+  messageId: number,
+  formId: number,
+  detail: Dict,
+  files: FormFileRow[],
+  officerId: number | null,
+  page: number,
+): Promise<void> {
+  await editMessageText(env, chatId, messageId, formatFormMenuMessage(detail), {
     reply_markup: buildFormFilesKeyboard(formId, files, officerId, page),
   });
 }
@@ -765,6 +787,10 @@ function formatFormDetailMessage(detail: Dict): string {
   return lines.join("\n");
 }
 
+function formatFormMenuMessage(detail: Dict): string {
+  return formatFormDetailMessage(detail) + "\n\nเลือกเมนูด้านล่าง";
+}
+
 function findSpecialFile(files: FormFileRow[], docHints: string[], keyHints: string[]): FormFileRow | null {
   for (const key of keyHints) {
     const found = files.find((row) => row.has_file && row.key.toLowerCase() === key.toLowerCase());
@@ -802,6 +828,96 @@ function formatFormFilesMessage(formId: number, files: FormFileRow[]): string {
   }
   realFiles.forEach((row) => lines.push(`- ${row.key} | ${String(row.doc_name || "-")} | ${row.file_name || "-"}`));
   lines.push("", "ใช้ /file <form_id> <key> เพื่อให้บอทส่งไฟล์ต้นฉบับ");
+  return lines.join("\n");
+}
+
+function flattenHistoryRows(rows: Dict[], depth = 0): Dict[] {
+  const result: Dict[] = [];
+  for (const row of rows) {
+    result.push({ ...row, _depth: depth });
+    const children = Array.isArray(row.children) ? row.children.filter((item): item is Dict => !!item && typeof item === "object") : [];
+    result.push(...flattenHistoryRows(children, depth + 1));
+  }
+  return result;
+}
+
+function formatFormHistoryMessage(formId: number, rows: Dict[]): string {
+  const flat = flattenHistoryRows(rows);
+  const lines = [`ประวัติการดำเนินการของ ${formId}`, `จำนวนรายการ: ${flat.length}`, ``];
+  if (!flat.length) {
+    lines.push("ไม่พบประวัติการดำเนินการ");
+    return lines.join("\n");
+  }
+  for (const row of flat.slice(0, 25)) {
+    const indent = "  ".repeat(Number(row._depth || 0));
+    lines.push(`${indent}- ${String(row.name || "-")} | ${String(row.department || "-")} | ${String(row.assign_date || "-")}`);
+    lines.push(`${indent}  ผู้รับผิดชอบ: ${String(row.name_onwer || "-")} | เจ้าของงาน: ${String(row.owner || "-")}`);
+    const reason = String(row.reason || "").trim();
+    if (reason) lines.push(`${indent}  เหตุผล: ${reason}`);
+  }
+  if (flat.length > 25) lines.push("", `แสดง 25 รายการแรกจากทั้งหมด ${flat.length}`);
+  return lines.join("\n");
+}
+
+function extractOfficialRows(attachments: Dict): Array<{ section: string; row: Dict }> {
+  const official = (attachments.official_doc && typeof attachments.official_doc === "object" ? attachments.official_doc : {}) as Dict;
+  const result: Array<{ section: string; row: Dict }> = [];
+  const addRows = (section: string, rows: unknown) => {
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      result.push({ section, row: row as Dict });
+    }
+  };
+  addRows("หนังสือ/เอกสารทางการ", official.doc);
+  addRows("เอกสารวิศวกร", (official.engineer_doc && typeof official.engineer_doc === "object" ? (official.engineer_doc as Dict).doc : []));
+  addRows("เอกสารนายตรวจ", (official.inspectors_doc && typeof official.inspectors_doc === "object" ? (official.inspectors_doc as Dict).doc : []));
+  return result;
+}
+
+function formatOfficialFilesMessage(formId: number, attachments: Dict): string {
+  const official = (attachments.official_doc && typeof attachments.official_doc === "object" ? attachments.official_doc : {}) as Dict;
+  const rows = extractOfficialRows(attachments);
+  const lines = [
+    `เอกสารแนบของ ${formId}`,
+    `manage_file_status: ${String(official.manage_file_status ?? "-")}`,
+    `จำนวนรายการ: ${rows.length}`,
+    "",
+  ];
+  if (!rows.length) {
+    lines.push("ไม่พบเอกสารแนบฝั่งทางการ");
+    return lines.join("\n");
+  }
+  for (const { section, row } of rows) {
+    const file = row.file && typeof row.file === "object" ? row.file as Dict : null;
+    lines.push(`- [${section}] ${String(row.seq ?? "-")} ${String(row.doc_name || "-")} | ${file ? String(file.name || "-") : "ยังไม่มีไฟล์"}`);
+  }
+  return lines.join("\n");
+}
+
+function formatActionSummaryMessage(formId: number, detail: Dict, attachments: Dict): string {
+  const official = (attachments.official_doc && typeof attachments.official_doc === "object" ? attachments.official_doc : {}) as Dict;
+  const engineerDoc = (official.engineer_doc && typeof official.engineer_doc === "object" ? official.engineer_doc : {}) as Dict;
+  const inspectorDoc = (official.inspectors_doc && typeof official.inspectors_doc === "object" ? official.inspectors_doc : {}) as Dict;
+  const lines = [
+    `การดำเนินการของ ${String(detail.form_number || formId)}`,
+    `id: ${formId}`,
+    `สถานะ: ${String(detail.status || "-")}`,
+    `คงเหลือ: ${String(detail.day_remaining ?? "-")}`,
+    `ผู้รับผิดชอบ: ${String(detail.assign_to_name || "-")}`,
+    `หน่วยงาน: ${String(detail.assign_to_department || "-")}`,
+    `owner: ${String(detail.assign_to_owner || "-")}`,
+    `manage_file_status: ${String(official.manage_file_status ?? "-")}`,
+    `วิศวกรจัดการไฟล์ได้: ${String(engineerDoc.manage_file_status ?? "-")}`,
+    `นายตรวจจัดการไฟล์ได้: ${String(inspectorDoc.manage_file_status ?? "-")}`,
+  ];
+  if (detail.authorized_number) lines.push(`เลขอนุมัติ: ${String(detail.authorized_number)}`);
+  if (detail.reason_send_back) lines.push(`เหตุผลส่งกลับ: ${String(detail.reason_send_back)}`);
+  const users = Array.isArray(detail.user_assign) ? detail.user_assign : [];
+  if (users.length) {
+    lines.push("ผู้เกี่ยวข้อง:");
+    users.forEach((entry) => lines.push(`- ${String(entry)}`));
+  }
   return lines.join("\n");
 }
 
