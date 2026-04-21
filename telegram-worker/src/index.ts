@@ -29,9 +29,16 @@ interface TelegramMessage {
   chat?: { id: number; type?: string };
 }
 
+interface TelegramCallbackQuery {
+  id: string;
+  data?: string;
+  message?: TelegramMessage;
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 interface BcoOfficerRow {
@@ -57,6 +64,7 @@ const KV_AUTH_ALERT_KEY = "bco:auth_alert_active";
 const KV_RUNTIME_OTP_KEY = "bco:runtime_otp";
 const MAP_DOC_HINTS = ["แผนที่ที่ตั้งอาคาร", "แผนที่", "ป้าย"];
 const BUILDING_DOC_HINTS = ["ภาพถ่ายหน้าอาคาร", "ภาพถ่ายอาคาร", "รูปอาคาร", "หน้าอาคาร"];
+const TASKS_PAGE_SIZE = 8;
 
 function telegramRequest(token: string, method: string, body: Record<string, unknown>): Promise<Response> {
   return fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -66,13 +74,46 @@ function telegramRequest(token: string, method: string, body: Record<string, unk
   });
 }
 
-async function sendMessage(env: Env, chatId: number | string, text: string): Promise<void> {
+async function sendMessage(
+  env: Env,
+  chatId: number | string,
+  text: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
   const resp = await telegramRequest(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
     chat_id: chatId,
     text,
+    ...extra,
   });
   if (!resp.ok) {
     throw new Error(`Telegram sendMessage failed: HTTP ${resp.status}`);
+  }
+}
+
+async function editMessageText(
+  env: Env,
+  chatId: number | string,
+  messageId: number,
+  text: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  const resp = await telegramRequest(env.TELEGRAM_BOT_TOKEN, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    ...extra,
+  });
+  if (!resp.ok) {
+    throw new Error(`Telegram editMessageText failed: HTTP ${resp.status}`);
+  }
+}
+
+async function answerCallbackQuery(env: Env, callbackQueryId: string, text = ""): Promise<void> {
+  const body: Record<string, unknown> = { callback_query_id: callbackQueryId };
+  if (text) body.text = text;
+  const resp = await telegramRequest(env.TELEGRAM_BOT_TOKEN, "answerCallbackQuery", body);
+  if (!resp.ok) {
+    throw new Error(`Telegram answerCallbackQuery failed: HTTP ${resp.status}`);
   }
 }
 
@@ -472,23 +513,118 @@ function formatTasksMessage(officer: BcoOfficerRow, forms: Dict[]): string {
 }
 
 function formatTasksPickerMessage(officer: BcoOfficerRow, forms: Dict[]): string {
+  return formatTasksPickerPageMessage(officer, forms, 0);
+}
+
+function formatTasksPickerPageMessage(officer: BcoOfficerRow, forms: Dict[], page: number): string {
+  const totalPages = Math.max(1, Math.ceil(forms.length / TASKS_PAGE_SIZE));
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = safePage * TASKS_PAGE_SIZE;
+  const pageItems = forms.slice(start, start + TASKS_PAGE_SIZE);
+
   const lines = [
     `รายการค้างของ ${officer.name}`,
     `บทบาท: ${officer.role}`,
     `จำนวนงานทั้งหมด: ${forms.length}`,
+    `หน้า ${safePage + 1}/${totalPages}`,
     "",
+    "กดเลือกเรื่องเพื่อดูรายการไฟล์แนบ",
   ];
-  if (!forms.length) {
-    lines.push("ไม่พบงานในสถานะ active");
-    return lines.join("\n");
-  }
-  for (const form of forms.slice(0, 20)) {
-    lines.push(`- ${String(form.form_number || form.id)} | คงเหลือ: ${String(form.day_remaining ?? "-")} | ${String(form.status || "-")}`);
-  }
-  if (forms.length > 20) {
-    lines.push("", `แสดง 20 รายการแรกจากทั้งหมด ${forms.length}`);
+  if (pageItems.length) {
+    lines.push("");
+    for (const form of pageItems) {
+      lines.push(`- ${String(form.form_number || form.id)} | คงเหลือ: ${String(form.day_remaining ?? "-")} | ${String(form.status || "-")}`);
+    }
+  } else {
+    lines.push("", "ไม่พบงานในหน้านี้");
   }
   return lines.join("\n");
+}
+
+function buildTasksKeyboard(officerId: number, forms: Dict[], page: number): Record<string, unknown> {
+  const totalPages = Math.max(1, Math.ceil(forms.length / TASKS_PAGE_SIZE));
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = safePage * TASKS_PAGE_SIZE;
+  const pageItems = forms.slice(start, start + TASKS_PAGE_SIZE);
+  const inline_keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  for (const form of pageItems) {
+    const text = `${String(form.form_number || form.id)} (${String(form.day_remaining ?? "-")})`.slice(0, 64);
+    inline_keyboard.push([{ text, callback_data: `form:${officerId}:${String(form.id)}:${safePage}` }]);
+  }
+
+  const nav: Array<{ text: string; callback_data: string }> = [];
+  if (safePage > 0) nav.push({ text: "ก่อนหน้า", callback_data: `tasks:${officerId}:${safePage - 1}` });
+  if (safePage + 1 < totalPages) nav.push({ text: "ถัดไป", callback_data: `tasks:${officerId}:${safePage + 1}` });
+  if (nav.length) inline_keyboard.push(nav);
+
+  return { inline_keyboard };
+}
+
+function formatFormFilesPickerMessage(formId: number, detail: Dict, files: FormFileRow[]): string {
+  const realFiles = files.filter((row) => row.has_file);
+  const mapRow = findSpecialFile(files, MAP_DOC_HINTS, ["a5.6"]);
+  const buildingRow = findSpecialFile(files, BUILDING_DOC_HINTS, ["a5.5"]);
+  const lines = [
+    `${String(detail.form_number || formId)}`,
+    `id: ${formId}`,
+    `สถานะ: ${String(detail.status || "-")}`,
+    `คงเหลือ: ${String(detail.day_remaining ?? "-")}`,
+    `ไฟล์ที่มีจริง: ${realFiles.length}`,
+    `มีแผนที่แนบ: ${mapRow ? "มี" : "ไม่มี"}`,
+    `มีรูปหน้าอาคาร: ${buildingRow ? "มี" : "ไม่มี"}`,
+  ];
+  if (detail.latitude && detail.longitude) {
+    lines.push(`พิกัด: ${String(detail.latitude)}, ${String(detail.longitude)}`);
+  }
+  lines.push("", "กดปุ่มดูแผนที่/รูปอาคาร หรือเลือกไฟล์ต้นฉบับให้บอทส่งเข้าแชต");
+  return lines.join("\n");
+}
+
+function buildFormFilesKeyboard(formId: number, files: FormFileRow[], officerId: number | null = null, page = 0): Record<string, unknown> {
+  const realFiles = files.filter((row) => row.has_file);
+  const inline_keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  const actionRow: Array<{ text: string; callback_data: string }> = [];
+  if (findSpecialFile(files, MAP_DOC_HINTS, ["a5.6"])) actionRow.push({ text: "ดูแผนที่", callback_data: `preview:${formId}:map` });
+  if (findSpecialFile(files, BUILDING_DOC_HINTS, ["a5.5"])) actionRow.push({ text: "ดูรูปอาคาร", callback_data: `preview:${formId}:building` });
+  if (actionRow.length) inline_keyboard.push(actionRow);
+
+  for (const row of realFiles) {
+    inline_keyboard.push([{ text: `${row.key} ${String(row.doc_name || "-")}`.slice(0, 64), callback_data: `file:${formId}:${row.key}` }]);
+  }
+
+  if (officerId !== null) {
+    inline_keyboard.push([{ text: "กลับไปรายการเรื่อง", callback_data: `tasks:${officerId}:${page}` }]);
+  }
+
+  return { inline_keyboard };
+}
+
+async function sendTasksMenu(env: Env, chatId: number | string, officer: BcoOfficerRow, forms: Dict[], page: number): Promise<void> {
+  await sendMessage(env, chatId, formatTasksPickerPageMessage(officer, forms, page), {
+    reply_markup: buildTasksKeyboard(officer.id, forms, page),
+  });
+}
+
+async function editTasksMenu(env: Env, chatId: number | string, messageId: number, officer: BcoOfficerRow, forms: Dict[], page: number): Promise<void> {
+  await editMessageText(env, chatId, messageId, formatTasksPickerPageMessage(officer, forms, page), {
+    reply_markup: buildTasksKeyboard(officer.id, forms, page),
+  });
+}
+
+async function editFormFilesMenu(
+  env: Env,
+  chatId: number | string,
+  messageId: number,
+  formId: number,
+  detail: Dict,
+  files: FormFileRow[],
+  officerId: number,
+  page: number,
+): Promise<void> {
+  await editMessageText(env, chatId, messageId, formatFormFilesPickerMessage(formId, detail, files), {
+    reply_markup: buildFormFilesKeyboard(formId, files, officerId, page),
+  });
 }
 
 function flattenFormDetail(formId: number, data: Dict): Dict {
@@ -875,7 +1011,8 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
   if (command === "/tasks") {
     if (!query) return "ใช้คำสั่ง /tasks <id|username|ชื่อ>";
     const { officer, forms } = await getTasksForOfficer(env, query);
-    return formatTasksPickerMessage(officer, forms);
+    await sendTasksMenu(env, message.chat?.id || "", officer, forms, 0);
+    return null;
   }
 
   if (command === "/form") {
@@ -961,6 +1098,72 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
 }
 
 async function processTelegramUpdate(env: Env, update: TelegramUpdate): Promise<void> {
+  const callbackQuery = update.callback_query;
+  if (callbackQuery?.id && callbackQuery.data && callbackQuery.message?.chat?.id && callbackQuery.message.message_id) {
+    try {
+      await answerCallbackQuery(env, callbackQuery.id);
+      const data = callbackQuery.data;
+      const chatId = callbackQuery.message.chat.id;
+      const messageId = callbackQuery.message.message_id;
+
+      if (data.startsWith("tasks:")) {
+        const [, officerIdText, pageText] = data.split(":", 3);
+        const { officer, forms } = await getTasksForOfficer(env, officerIdText);
+        await editTasksMenu(env, chatId, messageId, officer, forms, Number(pageText || "0"));
+        return;
+      }
+
+      if (data.startsWith("form:")) {
+        const [, officerIdText, formIdText, pageText] = data.split(":", 4);
+        const formId = Number(formIdText);
+        const detail = flattenFormDetail(formId, await getFormDetail(env, formId));
+        const files = listFormFiles(formId, await getFormAttachments(env, formId));
+        await editFormFilesMenu(env, chatId, messageId, formId, detail, files, Number(officerIdText), Number(pageText || "0"));
+        return;
+      }
+
+      if (data.startsWith("file:")) {
+        const [, formIdText, key] = data.split(":", 3);
+        const formId = Number(formIdText);
+        const attachmentData = await getFormAttachments(env, formId);
+        const row = findFormFileByKey(attachmentData, key);
+        if (!row) {
+          await sendMessage(env, chatId, `ไม่พบ key ${key} ในฟอร์ม ${formId}`);
+          return;
+        }
+        if (!row.has_file) {
+          await sendMessage(env, chatId, `key ${key} มีช่องเอกสาร แต่ยังไม่มีไฟล์แนบ`);
+          return;
+        }
+        await sendFormFile(env, chatId, formId, row);
+        return;
+      }
+
+      if (data.startsWith("preview:")) {
+        const [, formIdText, previewType] = data.split(":", 3);
+        const formId = Number(formIdText);
+        const detail = flattenFormDetail(formId, await getFormDetail(env, formId));
+        const files = listFormFiles(formId, await getFormAttachments(env, formId));
+        if (previewType === "map") {
+          const row = findSpecialFile(files, MAP_DOC_HINTS, ["a5.6"]);
+          await sendMessage(env, chatId, formatMapMessage(detail, row));
+          if (row) await sendFormFile(env, chatId, formId, row);
+          return;
+        }
+        if (previewType === "building") {
+          const row = findSpecialFile(files, BUILDING_DOC_HINTS, ["a5.5"]);
+          await sendMessage(env, chatId, formatBuildingPhotoMessage(detail, row));
+          if (row) await sendFormFile(env, chatId, formId, row);
+          return;
+        }
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await sendMessage(env, callbackQuery.message.chat.id, authWarning(detail));
+      return;
+    }
+  }
+
   const message = update.message;
   if (!message?.chat?.id || !message.text) return;
   try {
