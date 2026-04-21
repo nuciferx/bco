@@ -106,6 +106,19 @@ def _load_json(path: str) -> dict[str, Any] | None:
     return _normalise_token_data(data)
 
 
+def _load_env_token_data() -> dict[str, Any] | None:
+    access_token = os.getenv("BCO_ACCESS_TOKEN", "").strip()
+    refresh_token = os.getenv("BCO_REFRESH_TOKEN", "").strip()
+    if not access_token and not refresh_token:
+        return None
+    return _normalise_token_data(
+        {
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+        }
+    )
+
+
 def _save_cache(token_data: dict[str, Any]) -> None:
     data = _normalise_token_data(token_data)
     try:
@@ -569,6 +582,10 @@ def get_valid_token(
     if _token_data_is_valid(cached, min_ttl=min_ttl):
         return cached["accessToken"]
 
+    env_token_data = None if force_refresh else _load_env_token_data()
+    if _token_data_is_valid(env_token_data, min_ttl=min_ttl):
+        return env_token_data["accessToken"]
+
     try:
         chrome_data = get_bco_tokens(chrome_profile)
         _save_cache(chrome_data)
@@ -586,6 +603,14 @@ def get_valid_token(
         if _token_data_is_valid(refreshed, min_ttl=min_ttl):
             _save_cache(refreshed)
             print("[token_manager] Token refreshed successfully.")
+            return refreshed["accessToken"]
+
+    if env_token_data and env_token_data.get("accessToken") and env_token_data.get("refreshToken"):
+        print("[token_manager] Attempting token refresh from env...")
+        refreshed = try_refresh_token(env_token_data["accessToken"], env_token_data["refreshToken"])
+        if _token_data_is_valid(refreshed, min_ttl=min_ttl):
+            _save_cache(refreshed)
+            print("[token_manager] Token refreshed successfully from env.")
             return refreshed["accessToken"]
 
     credential_login = _login_from_env()

@@ -15,6 +15,8 @@ jobs:
       BCO_LOGIN_MODE: ${{ secrets.BCO_LOGIN_MODE }}
       BCO_USERNAME: ${{ secrets.BCO_USERNAME }}
       BCO_PASSWORD: ${{ secrets.BCO_PASSWORD }}
+      BCO_ACCESS_TOKEN: ${{ secrets.BCO_ACCESS_TOKEN }}
+      BCO_REFRESH_TOKEN: ${{ secrets.BCO_REFRESH_TOKEN }}
       BCO_TOTP_SECRET: ${{ secrets.BCO_TOTP_SECRET }}
 
     steps:

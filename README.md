@@ -135,6 +135,7 @@ powershell -ExecutionPolicy Bypass -File .\status_bot.ps1
 - ถ้าต้องการให้ bot online ได้ยาว ๆ แบบไม่ต้องคอยส่ง OTP ใหม่ ควรใส่ `BCO_TOTP_SECRET` ใน `.env`
 - ถ้าจะย้ายขึ้น Linux server จริง อย่าพึ่ง Chrome token extraction เพราะบน server ปกติไม่มี Chrome profile ให้ใช้ ควรตั้ง `BCO_USERNAME` / `BCO_PASSWORD` และถ้าจำเป็นให้ใส่ `BCO_TOTP_SECRET`
 - ถ้าจะใช้แบบ `air-quality` ให้ตั้ง GitHub Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `BCO_LOGIN_MODE`, `BCO_USERNAME`, `BCO_PASSWORD`, และถ้าจำเป็น `BCO_TOTP_SECRET`
+- ถ้ามี token ที่ใช้งานได้อยู่แล้วแต่ยังไม่มี `BCO_TOTP_SECRET` ให้ตั้ง `BCO_ACCESS_TOKEN` และ `BCO_REFRESH_TOKEN` เป็น GitHub Secrets ได้ด้วย เพื่อให้ workflow ใช้ refresh token ต่ออายุไปก่อน
 - workflow ที่เพิ่มไว้:
   - `.github/workflows/scheduled-report.yml` ส่งรายงานทุกวันเวลา 08:00 ไทย
   - `.github/workflows/auth-monitor.yml` เช็ค auth ทุก 30 นาที และแจ้ง Telegram เมื่อเข้า BCO ไม่ได้
