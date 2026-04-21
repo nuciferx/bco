@@ -87,6 +87,13 @@ sudo systemctl enable --now bco-bot
 sudo systemctl status bco-bot
 ```
 
+รันแบบ `air-quality` ผ่าน GitHub Actions:
+
+```bash
+# ไม่ต้องมี server ถ้าแค่ต้องการ schedule รายงาน/เช็ค auth เข้า Telegram
+# workflow จะรันจาก GitHub ตามเวลาแล้วส่งหา Telegram เอง
+```
+
 รันแบบ background บน Windows ให้ bot online ตลอด:
 
 ```powershell
@@ -127,3 +134,7 @@ powershell -ExecutionPolicy Bypass -File .\status_bot.ps1
 - ถ้าเป็น officer flow แต่ไม่มี `BCO_TOTP_SECRET` ให้ใช้ `--otp 123456` ใน CLI หรือส่ง `/otp 123456` หา bot ใน private chat
 - ถ้าต้องการให้ bot online ได้ยาว ๆ แบบไม่ต้องคอยส่ง OTP ใหม่ ควรใส่ `BCO_TOTP_SECRET` ใน `.env`
 - ถ้าจะย้ายขึ้น Linux server จริง อย่าพึ่ง Chrome token extraction เพราะบน server ปกติไม่มี Chrome profile ให้ใช้ ควรตั้ง `BCO_USERNAME` / `BCO_PASSWORD` และถ้าจำเป็นให้ใส่ `BCO_TOTP_SECRET`
+- ถ้าจะใช้แบบ `air-quality` ให้ตั้ง GitHub Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `BCO_LOGIN_MODE`, `BCO_USERNAME`, `BCO_PASSWORD`, และถ้าจำเป็น `BCO_TOTP_SECRET`
+- workflow ที่เพิ่มไว้:
+  - `.github/workflows/scheduled-report.yml` ส่งรายงานทุกวันเวลา 08:00 ไทย
+  - `.github/workflows/auth-monitor.yml` เช็ค auth ทุก 30 นาที และแจ้ง Telegram เมื่อเข้า BCO ไม่ได้

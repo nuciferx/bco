@@ -1,0 +1,32 @@
+name: BCO Scheduled Report
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      BCO_LOGIN_MODE: ${{ secrets.BCO_LOGIN_MODE }}
+      BCO_USERNAME: ${{ secrets.BCO_USERNAME }}
+      BCO_PASSWORD: ${{ secrets.BCO_PASSWORD }}
+      BCO_TOTP_SECRET: ${{ secrets.BCO_TOTP_SECRET }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send BCO status to Telegram
+        run: python github_actions_bot.py status
