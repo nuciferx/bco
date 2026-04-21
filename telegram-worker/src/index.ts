@@ -48,8 +48,15 @@ interface BcoOfficerRow {
 
 const BCO_API_BASE = "https://bco-api.bangkok.go.th/api/v1";
 const ALLOWED_ROLES = new Set(["วิศวกร", "นายตรวจ"]);
+const R1_ATTACHMENT_DOC_ID = 69;
+const R1_ATTACHMENT_SEQ = 4;
+const R1_ATTACHMENT_NAME = "สำเนาภาพถ่ายใบรับรองการตรวจสอบอาคารฉบับล่าสุด (ร.1)";
+const R1_FILE_NAME_HINTS = ["ร1", "ร.1", "ใบร.1", "ใบรับรอง", "ตรวจสอบอาคาร"];
 const KV_TOKEN_KEY = "bco:tokens";
 const KV_AUTH_ALERT_KEY = "bco:auth_alert_active";
+const KV_RUNTIME_OTP_KEY = "bco:runtime_otp";
+const MAP_DOC_HINTS = ["แผนที่ที่ตั้งอาคาร", "แผนที่", "ป้าย"];
+const BUILDING_DOC_HINTS = ["ภาพถ่ายหน้าอาคาร", "ภาพถ่ายอาคาร", "รูปอาคาร", "หน้าอาคาร"];
 
 function telegramRequest(token: string, method: string, body: Record<string, unknown>): Promise<Response> {
   return fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -66,6 +73,27 @@ async function sendMessage(env: Env, chatId: number | string, text: string): Pro
   });
   if (!resp.ok) {
     throw new Error(`Telegram sendMessage failed: HTTP ${resp.status}`);
+  }
+}
+
+async function sendBinary(
+  env: Env,
+  method: "sendDocument" | "sendPhoto",
+  chatId: number | string,
+  fileName: string,
+  bytes: ArrayBuffer | Uint8Array,
+  caption: string,
+): Promise<void> {
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  form.set("caption", caption);
+  form.set(method === "sendPhoto" ? "photo" : "document", new File([bytes], fileName));
+  const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!resp.ok) {
+    throw new Error(`Telegram ${method} failed: HTTP ${resp.status}`);
   }
 }
 
@@ -193,7 +221,8 @@ async function loginWithPassword(env: Env): Promise<TokenData | null> {
 
   const mode = (env.BCO_LOGIN_MODE || "").trim().toLowerCase() || "backoffice";
   const otpSecret = (env.BCO_TOTP_SECRET || "").trim();
-  const otpCode = (env.BCO_OTP_CODE || "").trim();
+  const kvOtp = ((await env.BCO_BOT_KV.get(KV_RUNTIME_OTP_KEY)) || "").trim();
+  const otpCode = kvOtp || (env.BCO_OTP_CODE || "").trim();
   const otp = otpSecret ? await generateTotp(otpSecret) : otpCode;
 
   const attempts: Array<{ endpoint: string; payload: Record<string, unknown> }> = [];
@@ -294,12 +323,47 @@ async function bcoGet(env: Env, path: string, retry = true): Promise<unknown> {
   return resp.json();
 }
 
+async function bcoDownload(env: Env, url: string): Promise<{ bytes: ArrayBuffer; contentType: string; }> {
+  const token = await getValidToken(env);
+  let resp = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "*/*",
+    },
+  });
+  if (resp.status === 401) {
+    await env.BCO_BOT_KV.delete(KV_TOKEN_KEY);
+    const refreshed = await getValidToken(env, true);
+    resp = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${refreshed}`,
+        Accept: "*/*",
+      },
+    });
+  }
+  if (!resp.ok) throw new Error(`BCO file download failed: HTTP ${resp.status}`);
+  return {
+    bytes: await resp.arrayBuffer(),
+    contentType: resp.headers.get("content-type") || "application/octet-stream",
+  };
+}
+
 async function getAllUsers(env: Env): Promise<Dict[]> {
   return extractItems(await bcoGet(env, "/users?page=1&limit=200"));
 }
 
 async function getAllForms(env: Env): Promise<Dict[]> {
   return extractItems(await bcoGet(env, "/form?form_status_id=1&per_page=10000&page=1"));
+}
+
+async function getFormDetail(env: Env, formId: number): Promise<Dict> {
+  const payload = (await bcoGet(env, `/form/${formId}`)) as Dict;
+  return ((payload.data && typeof payload.data === "object") ? payload.data : {}) as Dict;
+}
+
+async function getFormAttachments(env: Env, formId: number): Promise<Dict> {
+  const payload = (await bcoGet(env, `/form/${formId}/attachment`)) as Dict;
+  return ((payload.data && typeof payload.data === "object") ? payload.data : {}) as Dict;
 }
 
 function officerRows(users: Dict[]): Array<Omit<BcoOfficerRow, "total" | "overdue" | "critical" | "near">> {
@@ -407,6 +471,295 @@ function formatTasksMessage(officer: BcoOfficerRow, forms: Dict[]): string {
   return lines.join("\n");
 }
 
+function formatTasksPickerMessage(officer: BcoOfficerRow, forms: Dict[]): string {
+  const lines = [
+    `รายการค้างของ ${officer.name}`,
+    `บทบาท: ${officer.role}`,
+    `จำนวนงานทั้งหมด: ${forms.length}`,
+    "",
+  ];
+  if (!forms.length) {
+    lines.push("ไม่พบงานในสถานะ active");
+    return lines.join("\n");
+  }
+  for (const form of forms.slice(0, 20)) {
+    lines.push(`- ${String(form.form_number || form.id)} | คงเหลือ: ${String(form.day_remaining ?? "-")} | ${String(form.status || "-")}`);
+  }
+  if (forms.length > 20) {
+    lines.push("", `แสดง 20 รายการแรกจากทั้งหมด ${forms.length}`);
+  }
+  return lines.join("\n");
+}
+
+function flattenFormDetail(formId: number, data: Dict): Dict {
+  const formDetail = (data.form_detail && typeof data.form_detail === "object" ? data.form_detail : {}) as Dict;
+  const applicant = (data.applicant_person && typeof data.applicant_person === "object" ? data.applicant_person : {}) as Dict;
+  const owner = (data.owner_person && typeof data.owner_person === "object" ? data.owner_person : {}) as Dict;
+  const building = (data.k1_form_building && typeof data.k1_form_building === "object" ? data.k1_form_building : {}) as Dict;
+  const buildingInfoList = Array.isArray(building.k1_form_building_info) ? building.k1_form_building_info : [];
+  const buildingInfo = buildingInfoList.length && buildingInfoList[0] && typeof buildingInfoList[0] === "object" ? buildingInfoList[0] as Dict : {};
+  const latitude = building.latitude;
+  const longitude = building.longitude;
+  const googleMapsUrl = latitude && longitude ? `https://www.google.com/maps?q=${latitude},${longitude}` : null;
+  const openstreetmapUrl = latitude && longitude ? `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=18/${latitude}/${longitude}` : null;
+  const addressParts = [
+    building.addr_no,
+    building.addr_moo ? `หมู่ ${String(building.addr_moo)}` : null,
+    building.addr_soi ? `ซอย${String(building.addr_soi)}` : null,
+    building.addr_road_name,
+  ].filter(Boolean);
+  return {
+    id: formId,
+    form_number: formDetail.form_number,
+    status: formDetail.ref_status_name,
+    status_id: formDetail.ref_status_id,
+    day_remaining: formDetail.day_remaining,
+    owner_name: formDetail.owner_name,
+    assign_to_name: formDetail.assign_to_name,
+    assign_to_department: formDetail.assign_to_deparment,
+    assign_to_owner: formDetail.assign_to_owner,
+    user_assign: formDetail.user_assign,
+    reason_send_back: formDetail.reason_send_back,
+    authorized_number: formDetail.authorized_number,
+    form_date: formDetail.form_date,
+    applicant_name: [((applicant.prefix_name && typeof applicant.prefix_name === "object" ? (applicant.prefix_name as Dict).name : null) as string | null), applicant.first_name, applicant.last_name].filter(Boolean).join(" "),
+    applicant_mobile: applicant.mobile,
+    applicant_email: applicant.email,
+    owner_person_name: [((owner.prefix_name && typeof owner.prefix_name === "object" ? (owner.prefix_name as Dict).name : null) as string | null), owner.first_name, owner.last_name].filter(Boolean).join(" "),
+    building_name: buildingInfo.building_name || building.building_name,
+    project_name: buildingInfo.project_name,
+    address: addressParts.join(" "),
+    latitude,
+    longitude,
+    google_maps_url: googleMapsUrl,
+    openstreetmap_url: openstreetmapUrl,
+  };
+}
+
+type FormFileRow = {
+  form_id: number;
+  key: string;
+  parent_key?: string | null;
+  kind: string;
+  doc_id?: unknown;
+  seq?: unknown;
+  doc_name?: unknown;
+  form_attachment_id?: unknown;
+  has_file: boolean;
+  file_name?: string | null;
+  file_type?: string | null;
+  file_url?: string | null;
+  file_created_at?: string | null;
+};
+
+function listFormFiles(formId: number, data: Dict): FormFileRow[] {
+  const applicantDoc = (data.applicant_doc && typeof data.applicant_doc === "object" ? data.applicant_doc : {}) as Dict;
+  const files: FormFileRow[] = [];
+  const addRow = (kind: string, key: string, row: Dict, parentKey: string | null = null) => {
+    const fileInfo = row.file && typeof row.file === "object" ? row.file as Dict : null;
+    files.push({
+      form_id: formId,
+      key,
+      parent_key: parentKey,
+      kind,
+      doc_id: row.id,
+      seq: row.seq,
+      doc_name: row.doc_name,
+      form_attachment_id: row.form_attachment_id,
+      has_file: !!(row.is_file && fileInfo && fileInfo.url),
+      file_name: fileInfo ? String(fileInfo.name || "") : null,
+      file_type: fileInfo ? String(fileInfo.type || "") : null,
+      file_url: fileInfo ? String(fileInfo.url || "") : null,
+      file_created_at: fileInfo ? String(fileInfo.created_at || "") : null,
+    });
+  };
+
+  const downloadDocs = Array.isArray(applicantDoc.dowload_doc) ? applicantDoc.dowload_doc : [];
+  for (const row of downloadDocs) {
+    if (!row || typeof row !== "object") continue;
+    const dict = row as Dict;
+    addRow("download", `d${String(dict.seq ?? "")}`, dict);
+  }
+  const attachments = Array.isArray(applicantDoc.attachment) ? applicantDoc.attachment : [];
+  for (const row of attachments) {
+    if (!row || typeof row !== "object") continue;
+    const dict = row as Dict;
+    const key = `a${String(dict.seq ?? "")}`;
+    addRow("attachment", key, dict);
+    const subDocs = Array.isArray(dict.sub_doc) ? dict.sub_doc : [];
+    subDocs.forEach((sub, index) => {
+      if (!sub || typeof sub !== "object") return;
+      addRow("sub_doc", `${key}.${index + 1}`, sub as Dict, key);
+    });
+  }
+  return files;
+}
+
+function findFormFileByKey(data: Dict, key: string): FormFileRow | null {
+  const wanted = key.trim().toLowerCase();
+  return listFormFiles(0, data).find((row) => row.key.toLowerCase() === wanted) || null;
+}
+
+function formatFormDetailMessage(detail: Dict): string {
+  const lines = [
+    `${String(detail.form_number || "-")}`,
+    `id: ${String(detail.id || "-")}`,
+    `สถานะ: ${String(detail.status || "-")}`,
+    `คงเหลือ: ${String(detail.day_remaining ?? "-")}`,
+    `ผู้รับผิดชอบ: ${String(detail.assign_to_name || "-")}`,
+    `หน่วยงาน: ${String(detail.assign_to_department || "-")}`,
+    `owner: ${String(detail.assign_to_owner || "-")}`,
+  ];
+  if (detail.building_name) lines.push(`อาคาร: ${String(detail.building_name)}`);
+  if (detail.project_name) lines.push(`โครงการ: ${String(detail.project_name)}`);
+  if (detail.address) lines.push(`ที่ตั้ง: ${String(detail.address)}`);
+  if (detail.latitude && detail.longitude) lines.push(`พิกัด: ${String(detail.latitude)}, ${String(detail.longitude)}`);
+  if (detail.google_maps_url) lines.push(`Google Maps: ${String(detail.google_maps_url)}`);
+  if (detail.openstreetmap_url) lines.push(`OpenStreetMap: ${String(detail.openstreetmap_url)}`);
+  if (detail.applicant_name) lines.push(`ผู้ยื่น: ${String(detail.applicant_name)}`);
+  if (detail.applicant_mobile) lines.push(`มือถือ: ${String(detail.applicant_mobile)}`);
+  if (detail.applicant_email) lines.push(`อีเมล: ${String(detail.applicant_email)}`);
+  if (detail.authorized_number) lines.push(`เลขอนุมัติ: ${String(detail.authorized_number)}`);
+  if (detail.reason_send_back) lines.push(`เหตุผลส่งกลับ: ${String(detail.reason_send_back)}`);
+  const users = Array.isArray(detail.user_assign) ? detail.user_assign : [];
+  if (users.length) {
+    lines.push("ผู้เกี่ยวข้อง:");
+    users.forEach((entry) => lines.push(`- ${String(entry)}`));
+  }
+  return lines.join("\n");
+}
+
+function findSpecialFile(files: FormFileRow[], docHints: string[], keyHints: string[]): FormFileRow | null {
+  for (const key of keyHints) {
+    const found = files.find((row) => row.has_file && row.key.toLowerCase() === key.toLowerCase());
+    if (found) return found;
+  }
+  const loweredHints = docHints.map((hint) => hint.toLowerCase());
+  return files.find((row) => row.has_file && loweredHints.some((hint) => String(row.doc_name || "").toLowerCase().includes(hint))) || null;
+}
+
+function formatMapMessage(detail: Dict, row: FormFileRow | null): string {
+  const lines = [`แผนที่ของ ${String(detail.form_number || detail.id || "-")}`, `id: ${String(detail.id || "-")}`];
+  if (detail.building_name) lines.push(`อาคาร: ${String(detail.building_name)}`);
+  if (detail.address) lines.push(`ที่ตั้ง: ${String(detail.address)}`);
+  if (detail.latitude && detail.longitude) lines.push(`พิกัด: ${String(detail.latitude)}, ${String(detail.longitude)}`);
+  if (detail.google_maps_url) lines.push(`Google Maps: ${String(detail.google_maps_url)}`);
+  if (detail.openstreetmap_url) lines.push(`OpenStreetMap: ${String(detail.openstreetmap_url)}`);
+  lines.push(row ? `ไฟล์แผนที่: ${row.key} | ${row.file_name || "-"}` : "ไม่พบไฟล์แผนที่แนบในฟอร์มนี้");
+  return lines.join("\n");
+}
+
+function formatBuildingPhotoMessage(detail: Dict, row: FormFileRow | null): string {
+  const lines = [`รูปหน้าอาคารของ ${String(detail.form_number || detail.id || "-")}`, `id: ${String(detail.id || "-")}`];
+  if (detail.building_name) lines.push(`อาคาร: ${String(detail.building_name)}`);
+  if (detail.address) lines.push(`ที่ตั้ง: ${String(detail.address)}`);
+  lines.push(row ? `ไฟล์รูปอาคาร: ${row.key} | ${row.file_name || "-"}` : "ไม่พบไฟล์รูปหน้าอาคารในฟอร์มนี้");
+  return lines.join("\n");
+}
+
+function formatFormFilesMessage(formId: number, files: FormFileRow[]): string {
+  const lines = [`ไฟล์ในฟอร์ม ${formId}`, `จำนวนไฟล์ที่มีจริง: ${files.filter((row) => row.has_file).length}`, ``];
+  const realFiles = files.filter((row) => row.has_file);
+  if (!realFiles.length) {
+    lines.push("ไม่พบไฟล์ที่แนบจริง");
+    return lines.join("\n");
+  }
+  realFiles.forEach((row) => lines.push(`- ${row.key} | ${String(row.doc_name || "-")} | ${row.file_name || "-"}`));
+  lines.push("", "ใช้ /file <form_id> <key> เพื่อให้บอทส่งไฟล์ต้นฉบับ");
+  return lines.join("\n");
+}
+
+function formatOneFileMessage(formId: number, row: FormFileRow): string {
+  return [
+    `ไฟล์ในฟอร์ม ${formId}`,
+    `key: ${row.key}`,
+    `เอกสาร: ${String(row.doc_name || "-")}`,
+    `ไฟล์: ${row.file_name || "-"}`,
+    `ประเภท: ${row.file_type || "-"}`,
+    `อัปโหลดเมื่อ: ${row.file_created_at || "-"}`,
+    `ลิงก์: ${row.file_url || "-"}`,
+  ].join("\n");
+}
+
+function buildFileCaption(formId: number, row: FormFileRow): string {
+  return [`ฟอร์ม ${formId}`, `key: ${row.key}`, `เอกสาร: ${String(row.doc_name || "-")}`, `ไฟล์: ${row.file_name || "-"}`].join("\n");
+}
+
+function findR1AttachmentRow(data: Dict): Dict | null {
+  const applicantDoc = (data.applicant_doc && typeof data.applicant_doc === "object" ? data.applicant_doc : {}) as Dict;
+  const rows = Array.isArray(applicantDoc.attachment) ? applicantDoc.attachment : [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const dict = row as Dict;
+    const docName = String(dict.doc_name || "").trim();
+    if (dict.id === R1_ATTACHMENT_DOC_ID) return dict;
+    if (dict.seq === R1_ATTACHMENT_SEQ && docName.includes("ร.1")) return dict;
+    if (docName === R1_ATTACHMENT_NAME) return dict;
+  }
+  return null;
+}
+
+function r1FileNameLooksLikeR1(fileName: string | null | undefined): boolean {
+  const lowered = String(fileName || "").toLowerCase();
+  return R1_FILE_NAME_HINTS.some((hint) => lowered.includes(hint));
+}
+
+function flattenR1AttachmentStatus(formId: number, formNumber: unknown, dayRemaining: unknown, status: unknown, data: Dict): Dict {
+  const row = findR1AttachmentRow(data);
+  const fileInfo = row?.file && typeof row.file === "object" ? row.file as Dict : null;
+  const hasFile = !!(row && row.form_attachment_id && row.is_file && fileInfo?.url);
+  return {
+    id: formId,
+    form_number: formNumber,
+    day_remaining: dayRemaining,
+    status,
+    has_r1_file: hasFile,
+    file_name_looks_like_r1: hasFile ? r1FileNameLooksLikeR1(String(fileInfo?.name || "")) : null,
+    file_name: fileInfo ? String(fileInfo.name || "") : null,
+  };
+}
+
+function formatR1Message(officer: BcoOfficerRow, rows: Dict[]): string {
+  const attached = rows.filter((row) => row.has_r1_file).length;
+  const missing = rows.length - attached;
+  const lines = [
+    `ไฟล์ ร.1 ของ ${officer.name}`,
+    `จำนวน ขร.1: ${rows.length}`,
+    `แนบแล้ว: ${attached}`,
+    `ยังไม่แนบ: ${missing}`,
+    "",
+  ];
+  if (!rows.length) {
+    lines.push("ไม่พบงาน ขร.1");
+    return lines.join("\n");
+  }
+  for (const row of rows) {
+    const state = !row.has_r1_file ? "ไม่มีไฟล์" : row.file_name_looks_like_r1 ? "มีไฟล์" : "มีไฟล์/ต้องเปิดดู";
+    lines.push(`- ${String(row.id)} ${String(row.form_number || "-")} | ${state} | คงเหลือ: ${String(row.day_remaining ?? "-")} | ${String(row.file_name || "-")}`);
+  }
+  return lines.join("\n");
+}
+
+function authWarning(detail: string): string {
+  return [
+    "BCO auth ใช้งานไม่ได้",
+    detail,
+    "",
+    "ให้ทำอย่างใดอย่างหนึ่ง:",
+    "• ใส่ BCO_ACCESS_TOKEN / BCO_REFRESH_TOKEN ใหม่",
+    "• หรือใส่ BCO_USERNAME / BCO_PASSWORD",
+    "• ถ้าใช้ officer flow ให้เพิ่ม BCO_TOTP_SECRET หรือส่ง /otp <รหัส>",
+  ].join("\n");
+}
+
+async function sendFormFile(env: Env, chatId: number | string, formId: number, row: FormFileRow): Promise<void> {
+  if (!row.file_url) throw new Error("File URL missing");
+  const { bytes, contentType } = await bcoDownload(env, row.file_url);
+  const fileName = row.file_name || `${formId}_${row.key}`;
+  const isPhoto = contentType.toLowerCase().startsWith("image/");
+  await sendBinary(env, isPhoto ? "sendPhoto" : "sendDocument", chatId, fileName, bytes, buildFileCaption(formId, row));
+}
+
 async function getWorkSummary(env: Env): Promise<BcoOfficerRow[]> {
   const [users, forms] = await Promise.all([getAllUsers(env), getAllForms(env)]);
   const officers = officerRows(users);
@@ -467,21 +820,30 @@ async function getTasksForOfficer(env: Env, officerQuery: string): Promise<{ off
   return { officer, forms };
 }
 
-async function handleCommand(env: Env, message: TelegramMessage): Promise<string> {
+async function handleCommand(env: Env, message: TelegramMessage): Promise<string | null> {
   const text = (message.text || "").trim();
   const [command, ...args] = text.split(/\s+/);
   const query = args.join(" ").trim();
 
   if (command === "/start" || command === "/help") {
     return [
-      "BCO Worker Bot",
+      "คำสั่งที่ใช้ได้",
+      "/help - แสดงรายการคำสั่ง",
+      "/start - แสดงรายการคำสั่ง",
       "",
       "/status - สรุปงานทั้งหมด",
-      "/top - 5 คนที่งานเกินกำหนดสูงสุด",
-      "/officer <id|username|ชื่อ> - ดูรายละเอียดเจ้าหน้าที่",
-      "/tasks <id|username|ชื่อ> - ดูงานของเจ้าหน้าที่",
-      "/refresh - บังคับ refresh token แล้วสรุปใหม่",
+      "/top - 5 คนที่งานเกินกำหนดมากสุด",
+      "/officer <ชื่อ|id|username> - ดูสรุปรายคน",
+      "/tasks <ชื่อ|id|username> - ดูรายการค้าง",
+      "/form <form_id> - ดูรายละเอียดงานเดี่ยว",
+      "/map <form_id> - ดูพิกัดและไฟล์แผนที่ของเรื่อง",
+      "/building <form_id> - ดูรูปหน้าอาคารของเรื่อง",
+      "/files <form_id> - ดูรายการไฟล์ทั้งหมดในฟอร์ม",
+      "/file <form_id> <key> - ส่งไฟล์หนึ่งตัวเข้าแชต",
+      "/r1 <ชื่อ|id|username> - เช็คไฟล์ ร.1 ของงาน ขร.1",
+      "/otp <รหัส> - ส่ง OTP เพื่อให้บอท login BCO",
       "/chatid - ดู chat id",
+      "/refresh - ล้าง token cache แล้วลองใหม่",
     ].join("\n");
   }
 
@@ -500,7 +862,7 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
 
   if (command === "/refresh") {
     await env.BCO_BOT_KV.delete(KV_TOKEN_KEY);
-    return formatStatusMessage(await getWorkSummary(env));
+    return "รีเฟรช token แล้ว\n\n" + formatStatusMessage(await getWorkSummary(env));
   }
 
   if (command === "/officer") {
@@ -513,7 +875,86 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
   if (command === "/tasks") {
     if (!query) return "ใช้คำสั่ง /tasks <id|username|ชื่อ>";
     const { officer, forms } = await getTasksForOfficer(env, query);
-    return formatTasksMessage(officer, forms);
+    return formatTasksPickerMessage(officer, forms);
+  }
+
+  if (command === "/form") {
+    if (!/^\d+$/.test(query)) return "ใช้คำสั่ง /form <form_id>";
+    const detail = flattenFormDetail(Number(query), await getFormDetail(env, Number(query)));
+    return formatFormDetailMessage(detail) + "\n\nใช้ /map เพื่อดูแผนที่ และ /building เพื่อดูรูปหน้าอาคาร";
+  }
+
+  if (command === "/map") {
+    if (!/^\d+$/.test(query)) return "ใช้คำสั่ง /map <form_id>";
+    const formId = Number(query);
+    const detail = flattenFormDetail(formId, await getFormDetail(env, formId));
+    const files = listFormFiles(formId, await getFormAttachments(env, formId));
+    const row = findSpecialFile(files, MAP_DOC_HINTS, ["a5.6"]);
+    await sendMessage(env, message.chat?.id || "", formatMapMessage(detail, row));
+    if (row) {
+      await sendFormFile(env, message.chat?.id || "", formId, row);
+      return null;
+    }
+    return null;
+  }
+
+  if (command === "/building") {
+    if (!/^\d+$/.test(query)) return "ใช้คำสั่ง /building <form_id>";
+    const formId = Number(query);
+    const detail = flattenFormDetail(formId, await getFormDetail(env, formId));
+    const files = listFormFiles(formId, await getFormAttachments(env, formId));
+    const row = findSpecialFile(files, BUILDING_DOC_HINTS, ["a5.5"]);
+    await sendMessage(env, message.chat?.id || "", formatBuildingPhotoMessage(detail, row));
+    if (row) {
+      await sendFormFile(env, message.chat?.id || "", formId, row);
+      return null;
+    }
+    return null;
+  }
+
+  if (command === "/files") {
+    if (!/^\d+$/.test(query)) return "ใช้คำสั่ง /files <form_id>";
+    const formId = Number(query);
+    const files = listFormFiles(formId, await getFormAttachments(env, formId));
+    return formatFormFilesMessage(formId, files);
+  }
+
+  if (command === "/file") {
+    const [formIdText, key] = args;
+    if (!formIdText || !/^\d+$/.test(formIdText) || !key) return "ใช้คำสั่ง /file <form_id> <key>";
+    const formId = Number(formIdText);
+    const attachmentData = await getFormAttachments(env, formId);
+    const row = findFormFileByKey(attachmentData, key);
+    if (!row) return `ไม่พบ key ${key} ในฟอร์ม ${formId}`;
+    if (!row.has_file) return `key ${key} มีช่องเอกสาร แต่ยังไม่มีไฟล์แนบ`;
+    await sendFormFile(env, message.chat?.id || "", formId, row);
+    return null;
+  }
+
+  if (command === "/r1") {
+    if (!query) return "ใช้คำสั่ง /r1 <id|username|ชื่อ>";
+    const { officer, forms } = await getTasksForOfficer(env, query);
+    const rows: Dict[] = [];
+    for (const form of forms) {
+      const formNumber = String(form.form_number || "");
+      const formId = Number(form.id);
+      if (!formNumber.startsWith("ขร.1") || !Number.isFinite(formId)) continue;
+      rows.push(flattenR1AttachmentStatus(formId, form.form_number, form.day_remaining, form.status, await getFormAttachments(env, formId)));
+    }
+    rows.sort((a, b) => Number(Boolean(a.has_r1_file)) - Number(Boolean(b.has_r1_file)) || Number(a.day_remaining ?? 1e9) - Number(b.day_remaining ?? 1e9));
+    return formatR1Message(officer, rows);
+  }
+
+  if (command === "/otp") {
+    const code = query.replace(/\s+/g, "");
+    if (message.chat?.type !== "private") return "คำสั่ง /otp ใช้ได้เฉพาะใน private chat กับบอท";
+    if (!/^\d{6,8}$/.test(code)) return "ใช้คำสั่ง /otp <รหัส OTP 6 หรือ 8 หลัก>";
+    if (!(env.BCO_USERNAME || "").trim() || !(env.BCO_PASSWORD || "").trim()) {
+      return "ยังไม่มี BCO_USERNAME / BCO_PASSWORD จึงใช้ OTP จาก Telegram ต่อไม่ได้";
+    }
+    await env.BCO_BOT_KV.put(KV_RUNTIME_OTP_KEY, code, { expirationTtl: 120 });
+    await env.BCO_BOT_KV.delete(KV_TOKEN_KEY);
+    return "รับ OTP แล้วและลอง login เรียบร้อย\n\n" + formatStatusMessage(await getWorkSummary(env));
   }
 
   return "ไม่รู้จักคำสั่งนี้ ใช้ /help";
@@ -524,10 +965,12 @@ async function processTelegramUpdate(env: Env, update: TelegramUpdate): Promise<
   if (!message?.chat?.id || !message.text) return;
   try {
     const reply = await handleCommand(env, message);
-    await sendMessage(env, message.chat.id, reply);
+    if (reply) {
+      await sendMessage(env, message.chat.id, reply);
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    await sendMessage(env, message.chat.id, `BCO bot error\n\n${detail}`);
+    await sendMessage(env, message.chat.id, authWarning(detail));
   }
 }
 
