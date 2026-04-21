@@ -94,6 +94,32 @@ sudo systemctl status bco-bot
 # workflow จะรันจาก GitHub ตามเวลาแล้วส่งหา Telegram เอง
 ```
 
+ย้ายบอทไป Cloudflare Worker:
+
+```bash
+cd telegram-worker
+npm install
+npx wrangler kv namespace create BCO_BOT_KV
+# เอา id ที่ได้มาใส่ใน telegram-worker/wrangler.toml
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+npx wrangler secret put TELEGRAM_CHAT_ID
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+npx wrangler secret put BCO_LOGIN_MODE
+npx wrangler secret put BCO_USERNAME
+npx wrangler secret put BCO_PASSWORD
+npx wrangler secret put BCO_ACCESS_TOKEN
+npx wrangler secret put BCO_REFRESH_TOKEN
+# ถ้ามีให้ใส่เพิ่ม
+npx wrangler secret put BCO_TOTP_SECRET
+npx wrangler deploy
+```
+
+ตั้ง Telegram webhook หลัง deploy:
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<your-worker-url>/telegram/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
+
 รันแบบ background บน Windows ให้ bot online ตลอด:
 
 ```powershell
@@ -139,3 +165,6 @@ powershell -ExecutionPolicy Bypass -File .\status_bot.ps1
 - workflow ที่เพิ่มไว้:
   - `.github/workflows/scheduled-report.yml` ส่งรายงานทุกวันเวลา 08:00 ไทย
   - `.github/workflows/auth-monitor.yml` เช็ค auth ทุก 30 นาที และแจ้ง Telegram เมื่อเข้า BCO ไม่ได้
+- worker bot อยู่ใน `telegram-worker/`
+- worker รองรับ `/status`, `/top`, `/officer`, `/tasks`, `/refresh`, `/chatid`
+- มี workflow `deploy-worker.yml` สำหรับ deploy อัตโนมัติเมื่อ push ถ้าตั้ง `CLOUDFLARE_API_TOKEN` และ `CLOUDFLARE_ACCOUNT_ID` ใน GitHub Secrets แล้ว

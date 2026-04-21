@@ -1,0 +1,14 @@
+name = "bco-telegram-bot"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+[vars]
+REPORT_TIMEZONE = "Asia/Bangkok"
+DAILY_REPORT_HOUR = "8"
+
+[[kv_namespaces]]
+binding = "BCO_BOT_KV"
+id = "c5c39fdb43df4fdd9b097814208dbb59"
+
+[triggers]
+crons = ["0 1 * * *", "*/30 * * * *"]
