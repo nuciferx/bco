@@ -1,0 +1,17 @@
+[Unit]
+Description=BCO Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bco
+EnvironmentFile=/opt/bco/.env
+ExecStart=/usr/bin/python3 /opt/bco/bot.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/bco/bot_runtime.log
+StandardError=append:/opt/bco/bot_runtime.log
+
+[Install]
+WantedBy=multi-user.target

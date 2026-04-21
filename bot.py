@@ -4,6 +4,7 @@ import datetime as dt
 import io
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
@@ -160,11 +161,15 @@ def _build_top_chart_svg(rows: list[dict[str, Any]]) -> str:
 
 
 def _render_svg_to_png(svg_text: str) -> bytes:
+    qlmanage_path = shutil.which("qlmanage")
+    if not qlmanage_path:
+        raise RuntimeError("qlmanage is not available on this host")
+
     with tempfile.TemporaryDirectory(prefix="bco_chart_") as tmpdir:
         svg_path = Path(tmpdir) / "top_chart.svg"
         svg_path.write_text(svg_text, encoding="utf-8")
         subprocess.run(
-            ["qlmanage", "-t", "-s", "1400", "-o", tmpdir, str(svg_path)],
+            [qlmanage_path, "-t", "-s", "1400", "-o", tmpdir, str(svg_path)],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

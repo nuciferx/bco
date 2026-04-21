@@ -65,6 +65,28 @@ python3 bco_api.py --r1-for ปฐมรัฐ
 python3 bot.py
 ```
 
+รันบน Linux server ด้วย Docker:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose logs -f
+```
+
+รันบน Linux server ด้วย systemd:
+
+```bash
+sudo mkdir -p /opt/bco
+sudo git clone https://github.com/nuciferx/bco.git /opt/bco
+cd /opt/bco
+cp .env.example .env
+python3 -m pip install -r requirements.txt
+sudo cp deploy/systemd/bco-bot.service /etc/systemd/system/bco-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now bco-bot
+sudo systemctl status bco-bot
+```
+
 รันแบบ background บน Windows ให้ bot online ตลอด:
 
 ```powershell
@@ -104,3 +126,4 @@ powershell -ExecutionPolicy Bypass -File .\status_bot.ps1
 - ถ้าเป็น Windows และ Chrome เปิดใช้งานอยู่ อาจดึง cookie ตรงไม่ได้ในบางจังหวะ ระบบจะ fallback ไปลอง login ตรงหรือ remote debugging ให้เอง
 - ถ้าเป็น officer flow แต่ไม่มี `BCO_TOTP_SECRET` ให้ใช้ `--otp 123456` ใน CLI หรือส่ง `/otp 123456` หา bot ใน private chat
 - ถ้าต้องการให้ bot online ได้ยาว ๆ แบบไม่ต้องคอยส่ง OTP ใหม่ ควรใส่ `BCO_TOTP_SECRET` ใน `.env`
+- ถ้าจะย้ายขึ้น Linux server จริง อย่าพึ่ง Chrome token extraction เพราะบน server ปกติไม่มี Chrome profile ให้ใช้ ควรตั้ง `BCO_USERNAME` / `BCO_PASSWORD` และถ้าจำเป็นให้ใส่ `BCO_TOTP_SECRET`

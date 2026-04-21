@@ -1,0 +1,10 @@
+services:
+  bco-bot:
+    build: .
+    container_name: bco-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./bot_runtime.log:/app/bot_runtime.log
+    command: ["python", "bot.py"]
