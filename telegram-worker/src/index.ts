@@ -407,6 +407,11 @@ async function getFormAttachments(env: Env, formId: number): Promise<Dict> {
   return ((payload.data && typeof payload.data === "object") ? payload.data : {}) as Dict;
 }
 
+async function getFormHistory(env: Env, formId: number): Promise<Dict> {
+  const payload = (await bcoGet(env, `/form/${formId}/history`)) as Dict;
+  return payload;
+}
+
 function officerRows(users: Dict[]): Array<Omit<BcoOfficerRow, "total" | "overdue" | "critical" | "near">> {
   return users
     .map((user) => {
@@ -607,6 +612,21 @@ function buildFormFilesKeyboard(formId: number, files: FormFileRow[], officerId:
   return { inline_keyboard };
 }
 
+function buildFormSectionKeyboard(
+  formId: number,
+  section: "history" | "attachments" | "action",
+  officerId: number | null,
+  page: number,
+): Record<string, unknown> {
+  const inline_keyboard: Array<Array<{ text: string; callback_data: string }>> = [
+    [{ text: "กลับหน้าเมนูฟอร์ม", callback_data: `formroot:${formId}:${officerId ?? 0}:${page}` }],
+  ];
+  if (officerId !== null) {
+    inline_keyboard.push([{ text: "กลับไปรายการเรื่อง", callback_data: `tasks:${officerId}:${page}` }]);
+  }
+  return { inline_keyboard };
+}
+
 async function sendTasksMenu(env: Env, chatId: number | string, officer: BcoOfficerRow, forms: Dict[], page: number): Promise<void> {
   await sendMessage(env, chatId, formatTasksPickerPageMessage(officer, forms, page), {
     reply_markup: buildTasksKeyboard(officer.id, forms, page),
@@ -646,6 +666,35 @@ async function editFormMenu(
 ): Promise<void> {
   await editMessageText(env, chatId, messageId, formatFormMenuMessage(detail), {
     reply_markup: buildFormFilesKeyboard(formId, files, officerId, page),
+  });
+}
+
+async function sendFormMenu(
+  env: Env,
+  chatId: number | string,
+  formId: number,
+  detail: Dict,
+  files: FormFileRow[],
+  officerId: number | null,
+  page: number,
+): Promise<void> {
+  await sendMessage(env, chatId, formatFormMenuMessage(detail), {
+    reply_markup: buildFormFilesKeyboard(formId, files, officerId, page),
+  });
+}
+
+async function editFormSectionMenu(
+  env: Env,
+  chatId: number | string,
+  messageId: number,
+  formId: number,
+  section: "history" | "attachments" | "action",
+  text: string,
+  officerId: number | null,
+  page: number,
+): Promise<void> {
+  await editMessageText(env, chatId, messageId, text, {
+    reply_markup: buildFormSectionKeyboard(formId, section, officerId, page),
   });
 }
 
@@ -1133,8 +1182,11 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
 
   if (command === "/form") {
     if (!/^\d+$/.test(query)) return "ใช้คำสั่ง /form <form_id>";
-    const detail = flattenFormDetail(Number(query), await getFormDetail(env, Number(query)));
-    return formatFormDetailMessage(detail) + "\n\nใช้ /map เพื่อดูแผนที่ และ /building เพื่อดูรูปหน้าอาคาร";
+    const formId = Number(query);
+    const detail = flattenFormDetail(formId, await getFormDetail(env, formId));
+    const files = listFormFiles(formId, await getFormAttachments(env, formId));
+    await sendFormMenu(env, message.chat?.id || "", formId, detail, files, null, 0);
+    return null;
   }
 
   if (command === "/map") {
@@ -1234,7 +1286,42 @@ async function processTelegramUpdate(env: Env, update: TelegramUpdate): Promise<
         const formId = Number(formIdText);
         const detail = flattenFormDetail(formId, await getFormDetail(env, formId));
         const files = listFormFiles(formId, await getFormAttachments(env, formId));
-        await editFormFilesMenu(env, chatId, messageId, formId, detail, files, Number(officerIdText), Number(pageText || "0"));
+        await editFormMenu(env, chatId, messageId, formId, detail, files, Number(officerIdText), Number(pageText || "0"));
+        return;
+      }
+
+      if (data.startsWith("formroot:")) {
+        const [, formIdText, officerIdText, pageText] = data.split(":", 4);
+        const formId = Number(formIdText);
+        const officerId = Number(officerIdText || "0");
+        const detail = flattenFormDetail(formId, await getFormDetail(env, formId));
+        const files = listFormFiles(formId, await getFormAttachments(env, formId));
+        await editFormMenu(env, chatId, messageId, formId, detail, files, officerId || null, Number(pageText || "0"));
+        return;
+      }
+
+      if (data.startsWith("section:")) {
+        const [, formIdText, section, officerIdText, pageText] = data.split(":", 5);
+        const formId = Number(formIdText);
+        const officerId = Number(officerIdText || "0") || null;
+        const page = Number(pageText || "0");
+        if (section === "history") {
+          const history = await getFormHistory(env, formId);
+          const rows = Array.isArray(history.data) ? history.data.filter((item): item is Dict => !!item && typeof item === "object") : [];
+          await editFormSectionMenu(env, chatId, messageId, formId, "history", formatFormHistoryMessage(formId, rows), officerId, page);
+          return;
+        }
+        if (section === "attachments") {
+          const attachments = await getFormAttachments(env, formId);
+          await editFormSectionMenu(env, chatId, messageId, formId, "attachments", formatOfficialFilesMessage(formId, attachments), officerId, page);
+          return;
+        }
+        if (section === "action") {
+          const detail = flattenFormDetail(formId, await getFormDetail(env, formId));
+          const attachments = await getFormAttachments(env, formId);
+          await editFormSectionMenu(env, chatId, messageId, formId, "action", formatActionSummaryMessage(formId, detail, attachments), officerId, page);
+          return;
+        }
         return;
       }
 
