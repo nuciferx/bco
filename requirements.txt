@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]>=20.0
+pycryptodome
+pyotp
+python-dotenv
+requests
