@@ -216,6 +216,17 @@ powershell -ExecutionPolicy Bypass -File .\status_bot.ps1
 
 | | |
 |---|---|
+| วันที่ | 2026-08-24 |
+| Version ID | `802cca53-1af2-4439-ae89-dedd69ca05db` |
+| URL | `https://bco-telegram-bot.ideaplanstudio.workers.dev` |
+| ขนาด | 64.64 KiB (gzip 13.11 KiB) |
+
+เพิ่มในรอบนี้: แก้บั๊ก `/otp` ที่ทำให้ login ไม่สำเร็จทุกครั้ง (ดูหัวข้อ "บั๊ก /otp" ด้านล่าง)
+
+### Deploy ก่อนหน้า
+
+| | |
+|---|---|
 | วันที่ | 2026-04-22 |
 | Version ID | `eb6eb58c-3857-4939-8a14-b677c58f4564` |
 | URL | `https://bco-telegram-bot.ideaplanstudio.workers.dev` |
@@ -381,3 +392,22 @@ npx wrangler kv key put "bco:tokens" \
 
 ตัวเฝ้าดูจะเตือนเข้า Telegram เอง (เช็คทุก 30 นาที) → ตอบกลับในแชตส่วนตัวว่า `/otp <รหัส 6 หลัก>`
 Worker จะ login เองแล้วเก็บ token ลง KV ให้ **ไม่ต้องแตะเครื่องเลย**
+
+### 🐛 บั๊ก `/otp` — แก้แล้ว 24 ส.ค. 2569
+
+**อาการ:** ส่ง `/otp <รหัส>` กี่ครั้งก็ขึ้น `Could not obtain a valid BCO token` เหมือนเดิมทุกครั้ง
+ทั้งที่รหัสถูกต้องและยังไม่หมดอายุ
+
+**สาเหตุ:** โค้ดเดิมเขียนรหัส OTP ลง KV (`bco:runtime_otp`) แล้วอ่านกลับมาใช้ทันทีในคำขอเดียวกัน
+แต่ **KV เป็น eventually consistent — เขียนแล้วอ่านทันทีมักได้ค่าเก่าหรือค่าว่าง**
+⇒ `loginWithPassword()` ได้ `otp` เป็นค่าว่าง ⇒ ข้าม `/auth/login/sso` ไปยิง `/auth/login` (backoffice)
+ซึ่งบัญชี officer ใช้ไม่ได้ ⇒ HTTP 400 ⇒ login ล้มเหลวทุกครั้ง
+
+**แก้:**
+1. `/otp` เรียก `loginWithPassword(env, code)` ส่งรหัสเข้าไปตรง ๆ ไม่วนผ่าน KV แล้ว `saveKvTokens()` เอง
+2. ตัดเงื่อนไข `mode === "officer"` ทิ้ง — **ถ้ามี OTP ให้ลอง SSO ก่อนเสมอ** แล้วค่อย fallback backoffice
+   (เดิมถ้า `BCO_LOGIN_MODE` บน Worker ไม่ได้ตั้งเป็น `officer` เป๊ะ ๆ จะข้าม SSO ไปเงียบ ๆ
+   และค่า secret บน Cloudflare อ่านย้อนดูไม่ได้ด้วย — เป็นกับดักซ้ำซ้อน)
+
+**บทเรียนกว้างกว่านั้น:** ใน Worker **ห้ามเขียน KV แล้วอ่านกลับในคำขอเดียวกัน** ถ้าต้องใช้ค่านั้นต่อ
+ให้ส่งผ่านตัวแปรในหน่วยความจำแทน

@@ -255,19 +255,18 @@ async function generateTotp(secret: string): Promise<string> {
   return String(binary % 1_000_000).padStart(6, "0");
 }
 
-async function loginWithPassword(env: Env): Promise<TokenData | null> {
+async function loginWithPassword(env: Env, otpOverride?: string): Promise<TokenData | null> {
   const username = (env.BCO_USERNAME || "").trim();
   const password = (env.BCO_PASSWORD || "").trim();
   if (!username || !password) return null;
 
-  const mode = (env.BCO_LOGIN_MODE || "").trim().toLowerCase() || "backoffice";
   const otpSecret = (env.BCO_TOTP_SECRET || "").trim();
   const kvOtp = ((await env.BCO_BOT_KV.get(KV_RUNTIME_OTP_KEY)) || "").trim();
   const otpCode = kvOtp || (env.BCO_OTP_CODE || "").trim();
-  const otp = otpSecret ? await generateTotp(otpSecret) : otpCode;
+  const otp = otpSecret ? await generateTotp(otpSecret) : ((otpOverride || "").trim() || otpCode);
 
   const attempts: Array<{ endpoint: string; payload: Record<string, unknown> }> = [];
-  if (mode === "officer" && otp) {
+  if (otp) {
     attempts.push({
       endpoint: "/auth/login/sso",
       payload: { username, password, otp },
@@ -1307,9 +1306,12 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
     if (!(env.BCO_USERNAME || "").trim() || !(env.BCO_PASSWORD || "").trim()) {
       return "ยังไม่มี BCO_USERNAME / BCO_PASSWORD จึงใช้ OTP จาก Telegram ต่อไม่ได้";
     }
-    await env.BCO_BOT_KV.put(KV_RUNTIME_OTP_KEY, code, { expirationTtl: 120 });
-    await env.BCO_BOT_KV.delete(KV_TOKEN_KEY);
-    return "รับ OTP แล้วและลอง login เรียบร้อย\n\n" + formatStatusMessage(await getWorkSummary(env));
+    const tokens = await loginWithPassword(env, code);
+    if (!tokens) {
+      return "login ด้วย OTP นี้ไม่สำเร็จ — รหัสอาจหมดอายุแล้ว ลองส่ง /otp ด้วยรหัสใหม่อีกครั้ง";
+    }
+    await saveKvTokens(env, tokens);
+    return "รับ OTP แล้วและ login เรียบร้อย\n\n" + formatStatusMessage(await getWorkSummary(env));
   }
 
   return "ไม่รู้จักคำสั่งนี้ ใช้ /help";
