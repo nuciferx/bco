@@ -27,6 +27,9 @@ from typing import Any
 from urllib.parse import unquote
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 BCO_API_BASE = "https://bco-api.bangkok.go.th/api/v1"
 BCO_WEB_URL = "https://bco.bangkok.go.th/officer"

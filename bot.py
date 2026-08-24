@@ -414,6 +414,7 @@ def format_help_message() -> str:
             "/tasks <ชื่อ|id|username> - ดูรายการค้างและกดเลือกเรื่อง/ไฟล์ได้เลย",
             "/form <form_id> - ดูรายละเอียดงานเดี่ยว",
             "/map <form_id> - ดูพิกัดและภาพแผนที่ของเรื่อง",
+            "/polygon <form_id> - ดูผังโพลิกอนบนแผนที่ OSM",
             "/building <form_id> - ดูภาพหน้าอาคารของเรื่อง",
             "/files <form_id> - ดูรายการไฟล์ทั้งหมดในฟอร์ม",
             "/file <form_id> <key> - ส่งไฟล์หนึ่งตัวเข้าแชต เช่น a4 หรือ a5.1",
@@ -427,6 +428,7 @@ def format_help_message() -> str:
             "/tasks ปฐมรัฐ",
             "/form 349968",
             "/map 347872",
+            "/polygon 347872",
             "/building 347872",
             "/files 347872",
             "/file 347872 a4",
@@ -688,6 +690,37 @@ async def _send_map_preview(message: Any, api: BCOApi, detail: dict[str, Any], f
             row,
             caption=f"แผนที่ {detail.get('form_number') or detail['id']}\nkey: {row['key']}",
         )
+
+
+def _render_write_map_png(write_map_items: list[dict[str, Any]]) -> bytes:
+    from staticmap import StaticMap, Polygon, CircleMarker  # type: ignore
+
+    m = StaticMap(800, 600, url_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png")
+    all_coords: list[tuple[float, float]] = []
+    for item in write_map_items:
+        geom = (item.get("latlng") or {}).get("geometry") or {}
+        coords_raw = (geom.get("coordinates") or [[]])[0]
+        if not coords_raw:
+            continue
+        coords = [(float(c[0]), float(c[1])) for c in coords_raw if len(c) >= 2]
+        if len(coords) < 3:
+            continue
+        poly_type = (item.get("latlng") or {}).get("properties", {}).get("polygonType", 0)
+        fill_color = "#FF444488" if poly_type == 2 else "#4444FF88"
+        outline_color = "#FF2222" if poly_type == 2 else "#2222FF"
+        m.add_polygon(Polygon(coords, outline_color, fill_color, simplify=True))
+        all_coords.extend(coords)
+
+    if not all_coords:
+        raise ValueError("ไม่มีพิกัดโพลิกอน")
+
+    cx = sum(c[0] for c in all_coords) / len(all_coords)
+    cy = sum(c[1] for c in all_coords) / len(all_coords)
+    m.add_marker(CircleMarker((cx, cy), "#FF0000", 6))
+    img = m.render(zoom=17)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 async def _send_building_preview(message: Any, api: BCOApi, detail: dict[str, Any], files: list[dict[str, Any]]) -> None:
@@ -1029,6 +1062,42 @@ async def callback_query_command(update: Update, context: ContextTypes.DEFAULT_T
             return
 
 
+async def polygon_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _maybe_store_chat_id(update)
+    query = " ".join(context.args).strip()
+    if not query or not query.isdigit():
+        await update.effective_message.reply_text("ใช้คำสั่ง /polygon <form_id>")
+        return
+
+    form_id = int(query)
+    profile = os.getenv("CHROME_PROFILE", "Profile 3")
+    try:
+        token = get_valid_token(profile)
+        api = BCOApi(token)
+        write_map_items = api.get_write_map(form_id)
+    except Exception as exc:
+        await update.effective_message.reply_text(_build_auth_warning(exc))
+        return
+
+    if not write_map_items:
+        await update.effective_message.reply_text(f"ฟอร์ม {form_id}: ไม่พบข้อมูลโพลิกอน (write_map ว่างเปล่า)")
+        return
+
+    type1 = sum(1 for it in write_map_items if (it.get("latlng") or {}).get("properties", {}).get("polygonType") == 1)
+    type2 = sum(1 for it in write_map_items if (it.get("latlng") or {}).get("properties", {}).get("polygonType") == 2)
+    caption = f"ผังโพลิกอน ฟอร์ม {form_id}\nผังบริเวณที่ดิน (น้ำเงิน): {type1} | ตัวอาคาร (แดง): {type2}"
+
+    try:
+        png_bytes = _render_write_map_png(write_map_items)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"render โพลิกอนไม่สำเร็จ: {exc}\n\n{caption}")
+        return
+
+    buf = io.BytesIO(png_bytes)
+    buf.name = f"polygon_{form_id}.png"
+    await update.effective_message.reply_photo(photo=buf, caption=caption, read_timeout=120, write_timeout=120)
+
+
 async def r1_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _maybe_store_chat_id(update)
     query = " ".join(context.args).strip()
@@ -1139,6 +1208,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("tasks", tasks_command))
     application.add_handler(CommandHandler("form", form_command))
     application.add_handler(CommandHandler("map", map_command))
+    application.add_handler(CommandHandler("polygon", polygon_command))
     application.add_handler(CommandHandler("building", building_command))
     application.add_handler(CommandHandler("files", files_command))
     application.add_handler(CommandHandler("file", file_command))

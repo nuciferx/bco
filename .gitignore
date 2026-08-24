@@ -27,3 +27,5 @@ env/
 telegram-worker/node_modules/
 telegram-worker/.wrangler/
 telegram-worker/.webhook_secret
+
+desktop.ini

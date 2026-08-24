@@ -407,6 +407,16 @@ async function getFormAttachments(env: Env, formId: number): Promise<Dict> {
   return ((payload.data && typeof payload.data === "object") ? payload.data : {}) as Dict;
 }
 
+async function getWriteMap(env: Env, formId: number): Promise<Dict[]> {
+  const payload = await bcoGet(env, `/form/${formId}/write_map`);
+  if (Array.isArray(payload)) return payload.filter((item): item is Dict => !!item && typeof item === "object");
+  if (payload && typeof payload === "object") {
+    const data = (payload as Dict).data;
+    if (Array.isArray(data)) return data.filter((item): item is Dict => !!item && typeof item === "object");
+  }
+  return [];
+}
+
 async function getFormHistory(env: Env, formId: number): Promise<Dict> {
   const payload = (await bcoGet(env, `/form/${formId}/history`)) as Dict;
   return payload;
@@ -1138,6 +1148,7 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
       "/tasks <ชื่อ|id|username> - ดูรายการค้าง",
       "/form <form_id> - ดูรายละเอียดงานเดี่ยว",
       "/map <form_id> - ดูพิกัดและไฟล์แผนที่ของเรื่อง",
+      "/polygon <form_id> - ดูสถานะโพลิกอนผังบริเวณ/ตัวอาคาร",
       "/building <form_id> - ดูรูปหน้าอาคารของเรื่อง",
       "/files <form_id> - ดูรายการไฟล์ทั้งหมดในฟอร์ม",
       "/file <form_id> <key> - ส่งไฟล์หนึ่งตัวเข้าแชต",
@@ -1201,6 +1212,45 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
       return null;
     }
     return null;
+  }
+
+  if (command === "/polygon") {
+    if (!/^\d+$/.test(query)) return "ใช้คำสั่ง /polygon <form_id>";
+    const formId = Number(query);
+    const items = await getWriteMap(env, formId);
+    if (!items.length) return `ฟอร์ม ${formId}: ไม่พบข้อมูลโพลิกอน (write_map ว่างเปล่า)`;
+    const getPolyType = (it: Dict): number => {
+      const latlng = it.latlng && typeof it.latlng === "object" ? it.latlng as Dict : {};
+      const props = latlng.properties && typeof latlng.properties === "object" ? latlng.properties as Dict : {};
+      return Number(props.polygonType) || 0;
+    };
+    const type1 = items.filter((it) => getPolyType(it) === 1).length;
+    const type2 = items.filter((it) => getPolyType(it) === 2).length;
+    const ready = type1 >= 1 && type2 >= 1;
+    const allCoords: Array<[number, number]> = [];
+    for (const item of items) {
+      const latlng = item.latlng && typeof item.latlng === "object" ? item.latlng as Dict : {};
+      const geom = latlng.geometry && typeof latlng.geometry === "object" ? latlng.geometry as Dict : {};
+      const ring = Array.isArray(geom.coordinates) && Array.isArray(geom.coordinates[0]) ? geom.coordinates[0] as Array<[number, number]> : [];
+      allCoords.push(...ring);
+    }
+    let osmLink = "";
+    if (allCoords.length) {
+      const lngs = allCoords.map((c) => c[0]);
+      const lats = allCoords.map((c) => c[1]);
+      const clat = (Math.min(...lats) + Math.max(...lats)) / 2;
+      const clng = (Math.min(...lngs) + Math.max(...lngs)) / 2;
+      osmLink = `\nOpenStreetMap: https://www.openstreetmap.org/?mlat=${clat.toFixed(6)}&mlon=${clng.toFixed(6)}#map=18/${clat.toFixed(6)}/${clng.toFixed(6)}`;
+    }
+    return [
+      `ผังโพลิกอน ฟอร์ม ${formId}`,
+      `ผังบริเวณที่ดิน (น้ำเงิน, type 1): ${type1}`,
+      `ตัวอาคาร (แดง, type 2): ${type2}`,
+      `จำนวนโพลิกอนทั้งหมด: ${items.length}`,
+      "",
+      ready ? "พร้อมส่ง: โพลิกอนครบ 2 ประเภท" : "ยังไม่พร้อมส่ง: โพลิกอนไม่ครบ (ต้องมีทั้ง type 1 และ type 2)",
+      osmLink,
+    ].join("\n").trim();
   }
 
   if (command === "/building") {

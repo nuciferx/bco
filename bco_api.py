@@ -145,6 +145,16 @@ class BCOApi:
             raise RuntimeError(f"Form {form_id} attachment data not found")
         return data
 
+    def get_write_map(self, form_id: int) -> list[dict[str, Any]]:
+        payload = self._request(f"/form/{form_id}/write_map")
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            data = payload.get("data")
+            if isinstance(data, list):
+                return [item for item in data if isinstance(item, dict)]
+        return []
+
     def download_file(self, url: str) -> tuple[bytes, str | None]:
         resp = self.session.get(url, timeout=60)
         if resp.status_code == 401:

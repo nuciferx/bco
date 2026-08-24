@@ -3,3 +3,5 @@ pycryptodome
 pyotp
 python-dotenv
 requests
+staticmap
+Pillow
