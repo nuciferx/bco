@@ -9,7 +9,7 @@
 | บอทหลัก | Cloudflare Worker — `https://bco-telegram-bot.ideaplanstudio.workers.dev` |
 | Telegram | `@bcobma_bot` (ชื่อ "Bco bot") · chat ที่ตั้งไว้ id `957180305` |
 | สถานะ auth | **ล็อกอินอยู่** — token หมดอายุ **27 ส.ค. 2569 05:45** |
-| ทดสอบล่าสุด | `/status` และ `/otp` ตอบกลับปกติ ผู้ใช้ยืนยันว่าเข้าใช้งานได้ |
+| ทดสอบล่าสุด | `/status` ผ่านหลัง deploy · `/otp` แก้บั๊กแล้ว รอผู้ใช้ยืนยัน |
 | บอท Python | ใช้ได้ (สำรอง) — ล็อกอินสำเร็จ ดึง `/top` ได้ข้อมูลจริง |
 
 ## ⏰ ต้องทำทุก ~3 วัน
@@ -34,6 +34,6 @@ Worker จะ login เองแล้วเก็บ token ลง KV ให้ 
 
 ## ที่ยังไม่ได้ทำ
 
-- **โค้ดในเครื่องใหม่กว่าที่ deploy อยู่** — `/polygon` deploy ไปแล้ว 22 เม.ย.
-  แต่หลังจากนั้นยังไม่ได้ deploy ซ้ำ ถ้าแก้ `index.ts` อีกต้อง `cd telegram-worker && npx wrangler deploy`
+- **deploy ตรงกับโค้ดในเครื่องแล้ว** — version `802cca53` (24 ส.ค. 2569)
+  ถ้าแก้ `index.ts` อีกต้อง `cd telegram-worker && npx wrangler deploy` ทุกครั้ง
 - **บอทยังกดส่งงานไม่ได้** — อ่านอย่างเดียว ยังไม่มีคำสั่งเขียนกลับเข้าระบบ (ดู NEXT_ACTION.md)
