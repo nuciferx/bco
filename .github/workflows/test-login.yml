@@ -1,0 +1,34 @@
+name: Test BCO Self-Login
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      BCO_USERNAME: ${{ secrets.BCO_USERNAME }}
+      BCO_PASSWORD: ${{ secrets.BCO_PASSWORD }}
+      BMA_DEVICE_ID: ${{ secrets.BMA_DEVICE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Try self-login from GitHub IP
+        run: |
+          python - <<'PY'
+          import os, bma_otp, requests
+          U=os.environ["BCO_USERNAME"]; P=os.environ["BCO_PASSWORD"]; D=os.environ["BMA_DEVICE_ID"]
+          # เช็ค BCO auth endpoint โดนบล็อกไหม (403 = block)
+          probe=requests.post("https://bco-api.bangkok.go.th/api/v1/auth/login/sso",
+                json={"username":U,"password":P,"otp":"000000"},
+                headers={"Content-Type":"application/json"},timeout=40)
+          print("PROBE /auth/login/sso HTTP",probe.status_code, probe.text[:80])
+          if probe.status_code==403:
+              print("RESULT: GitHub IP โดน Cloudflare block (403)"); raise SystemExit(1)
+          token, seed = bma_otp.get_bco_token(U,P,D)
+          print("RESULT: ✅ GitHub login BCO สำเร็จ token len", len(token["accessToken"]))
+          PY
