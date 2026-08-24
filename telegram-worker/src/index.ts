@@ -255,7 +255,7 @@ async function generateTotp(secret: string): Promise<string> {
   return String(binary % 1_000_000).padStart(6, "0");
 }
 
-async function loginWithPassword(env: Env, otpOverride?: string): Promise<TokenData | null> {
+async function loginWithPassword(env: Env, otpOverride?: string, diagnostics?: string[]): Promise<TokenData | null> {
   const username = (env.BCO_USERNAME || "").trim();
   const password = (env.BCO_PASSWORD || "").trim();
   if (!username || !password) return null;
@@ -277,9 +277,13 @@ async function loginWithPassword(env: Env, otpOverride?: string): Promise<TokenD
     payload: { username, password },
   });
 
+  if (!otp) diagnostics?.push("ไม่มีรหัส OTP ให้ใช้");
   for (const attempt of attempts) {
     const resp = await postJson(`${BCO_API_BASE}${attempt.endpoint}`, attempt.payload);
-    if (!resp.ok) continue;
+    if (!resp.ok) {
+      diagnostics?.push(`${attempt.endpoint} -> HTTP ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+      continue;
+    }
     const payload = (await resp.json()) as Dict;
     const data = (payload.data && typeof payload.data === "object" ? payload.data : payload) as Dict;
     const normalized = normalizeTokenData({
@@ -289,6 +293,7 @@ async function loginWithPassword(env: Env, otpOverride?: string): Promise<TokenD
     if (tokenDataValid(normalized)) {
       return normalized;
     }
+    diagnostics?.push(`${attempt.endpoint} -> HTTP 200 แต่ token ที่ได้ใช้ไม่ได้`);
   }
 
   return null;
@@ -1306,9 +1311,10 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
     if (!(env.BCO_USERNAME || "").trim() || !(env.BCO_PASSWORD || "").trim()) {
       return "ยังไม่มี BCO_USERNAME / BCO_PASSWORD จึงใช้ OTP จาก Telegram ต่อไม่ได้";
     }
-    const tokens = await loginWithPassword(env, code);
+    const diagnostics: string[] = [];
+    const tokens = await loginWithPassword(env, code, diagnostics);
     if (!tokens) {
-      return "login ด้วย OTP นี้ไม่สำเร็จ — รหัสอาจหมดอายุแล้ว ลองส่ง /otp ด้วยรหัสใหม่อีกครั้ง";
+      return ["login ด้วย OTP นี้ไม่สำเร็จ", "", "BCO ตอบกลับมาว่า:", ...diagnostics].join("\n");
     }
     await saveKvTokens(env, tokens);
     return "รับ OTP แล้วและ login เรียบร้อย\n\n" + formatStatusMessage(await getWorkSummary(env));
