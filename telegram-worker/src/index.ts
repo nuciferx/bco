@@ -7,6 +7,9 @@ export interface Env {
   BCO_PASSWORD?: string;
   BCO_TOTP_SECRET?: string;
   BCO_OTP_CODE?: string;
+  BMA_ENCODED_KEY?: string;
+  BMA_SEED_ID?: string;
+  BMA_DEVICE_ID?: string;
   BCO_ACCESS_TOKEN?: string;
   BCO_REFRESH_TOKEN?: string;
   REPORT_TIMEZONE?: string;
@@ -255,6 +258,42 @@ async function generateTotp(secret: string): Promise<string> {
   return String(binary % 1_000_000).padStart(6, "0");
 }
 
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64.replace(/-/g, "+").replace(/_/g, "/"));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function generateBmaOtp(env: Env): Promise<string | null> {
+  const encodedKey = (env.BMA_ENCODED_KEY || "").trim();
+  const seedId = (env.BMA_SEED_ID || "").trim();
+  const deviceId = (env.BMA_DEVICE_ID || "").trim();
+  if (!encodedKey || !seedId || !deviceId) return null;
+
+  const keyBytes = base64ToBytes(encodedKey);
+  const seed = base64ToBytes(seedId);
+  const nonce = seed.slice(0, 16);
+  const ctTag = seed.slice(16);
+  const aad = new TextEncoder().encode(deviceId);
+  const aesKey = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 },
+    aesKey,
+    ctTag,
+  );
+  const secret = new TextDecoder().decode(plain);
+
+  const hmacKey = await crypto.subtle.importKey("raw", base32Decode(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const counter = Math.floor(Date.now() / 1000 / 180);
+  const buffer = new ArrayBuffer(8);
+  new DataView(buffer).setUint32(4, counter, false);
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, buffer));
+  const offset = sig[sig.length - 1] & 0x0f;
+  const bin = ((sig[offset] & 0x7f) << 24) | (sig[offset + 1] << 16) | (sig[offset + 2] << 8) | sig[offset + 3];
+  return String(bin).slice(-6);
+}
+
 async function loginWithPassword(env: Env, otpOverride?: string, diagnostics?: string[]): Promise<TokenData | null> {
   const username = (env.BCO_USERNAME || "").trim();
   const password = (env.BCO_PASSWORD || "").trim();
@@ -263,7 +302,8 @@ async function loginWithPassword(env: Env, otpOverride?: string, diagnostics?: s
   const otpSecret = (env.BCO_TOTP_SECRET || "").trim();
   const kvOtp = ((await env.BCO_BOT_KV.get(KV_RUNTIME_OTP_KEY)) || "").trim();
   const otpCode = kvOtp || (env.BCO_OTP_CODE || "").trim();
-  const otp = otpSecret ? await generateTotp(otpSecret) : ((otpOverride || "").trim() || otpCode);
+  const bmaOtp = await generateBmaOtp(env);
+  const otp = bmaOtp || (otpSecret ? await generateTotp(otpSecret) : ((otpOverride || "").trim() || otpCode));
 
   const attempts: Array<{ endpoint: string; payload: Record<string, unknown> }> = [];
   if (otp) {
@@ -1157,6 +1197,7 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
       "/files <form_id> - ดูรายการไฟล์ทั้งหมดในฟอร์ม",
       "/file <form_id> <key> - ส่งไฟล์หนึ่งตัวเข้าแชต",
       "/r1 <ชื่อ|id|username> - เช็คไฟล์ ร.1 ของงาน ขร.1",
+      "/genotp - ขอรหัส OTP ไปเข้าเว็บ BCO เอง",
       "/otp <รหัส> - ส่ง OTP เพื่อให้บอท login BCO",
       "/chatid - ดู chat id",
       "/refresh - ล้าง token cache แล้วลองใหม่",
@@ -1302,6 +1343,17 @@ async function handleCommand(env: Env, message: TelegramMessage): Promise<string
     }
     rows.sort((a, b) => Number(Boolean(a.has_r1_file)) - Number(Boolean(b.has_r1_file)) || Number(a.day_remaining ?? 1e9) - Number(b.day_remaining ?? 1e9));
     return formatR1Message(officer, rows);
+  }
+
+  if (command === "/genotp") {
+    const otp = await generateBmaOtp(env);
+    if (!otp) return "ยังไม่ได้ตั้ง seed (BMA_ENCODED_KEY / BMA_SEED_ID / BMA_DEVICE_ID) จึงสร้าง OTP ให้ไม่ได้";
+    const left = 180 - Math.floor(Date.now() / 1000) % 180;
+    return `รหัส OTP สำหรับเข้าเว็บ BCO:
+
+${otp}
+
+ใช้ได้อีก ${left} วินาที (เปลี่ยนทุก 180 วิ)`;
   }
 
   if (command === "/otp") {

@@ -1,5 +1,24 @@
 # NEXT_ACTION — BCO Telegram Bot
 
+## งานค้างเร่งด่วน: ทำ auto-refresh token บนเครื่องบ้าน
+
+login BCO ทำได้จาก IP บ้านเท่านั้น (cloud โดน 403) — ต้องตั้งให้เครื่องนี้ refresh เอง
+
+**ที่ยังไม่ได้ทำ (ผู้ใช้ยังไม่ตัดสิน):**
+- [ ] Task Scheduler บนเครื่อง: รัน bma_otp login + push token ขึ้น KV ทุก ~6 ชม เมื่อเครื่องเปิด
+- [ ] หรือสคริปต์กดเองเวลาอยาก refresh (double-click)
+
+**วิธี refresh มือ (ใช้ได้เลยตอนนี้):**
+รันจากโฟลเดอร์ bco:
+```
+python -c "import bma_otp,json,token_manager as tm; from dotenv import dotenv_values as V; v=V('.env'); t,s=bma_otp.get_bco_token(v['BCO_USERNAME'].strip(),v['BCO_PASSWORD'].strip(),v['BMA_DEVICE_ID'].strip(),v.get('BMA_ENCODED_KEY','').strip(),v.get('BMA_SEED_ID','').strip()); td=tm._normalise_token_data(t); open('tok.json','w').write(json.dumps({'accessToken':t['accessToken'],'refreshToken':t['refreshToken'],'exp':td['exp'],'fetchedAt':td['fetchedAt']}))"
+cd telegram-worker && npx wrangler kv key put "bco:tokens" --namespace-id c5c39fdb43df4fdd9b097814208dbb59 --remote --path ../tok.json
+```
+
+---
+
+# NEXT_ACTION — BCO Telegram Bot
+
 ## งานถัดไป: ทำปุ่ม "เสนออนุญาต" ให้กดจากแชตได้
 
 ตอนนี้บอท**อ่านอย่างเดียว** ไม่มี POST สักที่ (ตรวจแล้วทั้ง `bot.py`, `bco_api.py`, `index.ts`)
